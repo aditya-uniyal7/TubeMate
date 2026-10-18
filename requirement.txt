@@ -1,0 +1,9 @@
+pandas
+numpy
+groq
+yt-dlp
+youtube-transcript-api
+python-dotenv
+Langchain
+langchain-community
+langchain-core
