@@ -1,0 +1,14 @@
+streamlit
+python-dotenv
+groq
+openai
+yt-dlp
+youtube-transcript-api
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+faiss-cpu
+pandas
+numpy
