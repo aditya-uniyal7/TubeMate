@@ -151,19 +151,6 @@ html, body, [class*="css"], .stApp {
   color: var(--muted);
 }
 
-.tm-tl {padding: 10px 18px 4px;}
-.tm-tl h3 {margin: 0; font-size: 14px; font-weight: 500; color: var(--muted);}
-.tm-track {position: relative; height: 8px; border-radius: 4px; background: var(--line); margin: 20px 0 8px;}
-.tm-fill {position: absolute; left: 0; top: 0; bottom: 0; background: var(--muted); border-radius: 4px;}
-.tm-head {position: absolute; top: -5px; width: 3px; height: 18px; margin-left: -1.5px; background: var(--ink); border-radius: 2px;}
-.tm-pin {
-  position: absolute; top: -6px; width: 18px; height: 18px; margin-left: -9px;
-  border-radius: 50%; background: var(--surface); border: 3px solid var(--accent);
-}
-.tm-pin.active {background: var(--accent);}
-.tm-times {display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;}
-.st-key-tl_pills {padding: 6px 18px 0 !important;}
-
 .st-key-chat_head {
   padding: 10px 16px !important;
   border-bottom: 1px solid var(--line) !important;
@@ -172,8 +159,8 @@ html, body, [class*="css"], .stApp {
 .st-key-chat_actions button,
 .st-key-chat_actions [data-testid="stDownloadButton"] button {
   white-space: nowrap !important;
-  padding: 3px 7px !important;
-  font-size: 11.5px !important;
+  padding: 3px 9px !important;
+  font-size: 12px !important;
 }
 
 .st-key-chat_log {padding: 14px 18px !important;}
@@ -196,7 +183,6 @@ html, body, [class*="css"], .stApp {
   font-size: 15px;
   line-height: 1.5;
 }
-.tm-from {font-size: 13px; color: var(--muted); font-family: var(--ui); margin-right: 4px; line-height: 28px;}
 
 .st-key-chat_ask {
   border-top: 1px solid var(--line) !important;
@@ -234,12 +220,9 @@ button[kind="secondary"]:hover, [data-testid="stDownloadButton"] button:hover {
   color: var(--ink) !important;
   border-color: var(--accent) !important;
 }
-.st-key-sugg_row button[kind="secondary"],
-[class*="st-key-ts_row_"] button[kind="secondary"],
-.st-key-tl_pills button[kind="secondary"] {
+.st-key-sugg_row button[kind="secondary"] {
   background: var(--soft) !important;
   border-radius: 999px !important;
-  font-variant-numeric: tabular-nums;
 }
 
 .tm-how {border-top: 1px solid var(--line); padding: 40px 0 36px; margin-top: 32px;}
@@ -261,24 +244,6 @@ button[kind="secondary"]:hover, [data-testid="stDownloadButton"] button:hover {
 @media (max-width: 900px) {.tm-steps {grid-template-columns: 1fr;}}
 </style>
 """, unsafe_allow_html=True)
-
-
-def fmt_time(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    hrs, rem = divmod(seconds, 3600)
-    mins, secs = divmod(rem, 60)
-    return f"{hrs}:{mins:02d}:{secs:02d}" if hrs else f"{mins}:{secs:02d}"
-
-
-def format_chat_markdown(title: str, source_label: str, history: list[dict]) -> str:
-    lines = [f"# TubeMate Chat — {title}", f"Source: {source_label}", ""]
-    for msg in history:
-        speaker = "You" if msg["role"] == "user" else "TubeMate"
-        lines.extend([f"## {speaker}", msg["content"]])
-        if msg.get("moments"):
-            lines.append(f"\n_Moments: {', '.join(fmt_time(t) for t in msg['moments'])}_")
-        lines.append("")
-    return "\n".join(lines)
 
 
 @st.cache_resource
@@ -304,7 +269,7 @@ st.markdown("""
 </nav>
 <div class="tm-intro">
   <h1>Ask a YouTube video anything.</h1>
-  <p>Paste a YouTube link or upload a recording. TubeMate reads or transcribes it with Whisper and answers with the moments it came from.</p>
+  <p>Paste a YouTube link or upload a recording. TubeMate reads or transcribes it with Whisper and answers your questions in English.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -346,7 +311,6 @@ with st.container(key="input_wrap"):
 
 engine = None
 source_key = None
-source_label = ""
 upload_bytes = None
 upload_ext = ""
 
@@ -356,10 +320,9 @@ if mode == "YouTube Link" and clean_url:
         st.warning("Please enter a valid YouTube link.")
     else:
         source_key = f"yt::{yt_id}"
-        source_label = f"https://www.youtube.com/watch?v={yt_id}"
         try:
-            with st.spinner("Reading transcript (with Whisper fallback if needed) and indexing moments..."):
-                engine = initialize_url_engine(source_label)
+            with st.spinner("Reading transcript (with Whisper fallback if needed)..."):
+                engine = initialize_url_engine(f"https://www.youtube.com/watch?v={yt_id}")
         except Exception as e:
             st.error(f"Could not load transcript: {e}")
 
@@ -368,11 +331,10 @@ elif mode != "YouTube Link" and uploaded_file is not None:
     file_hash = hashlib.sha256(upload_bytes).hexdigest()
     upload_ext = os.path.splitext(uploaded_file.name)[1].lower()
     source_key = f"upload::{file_hash}::{uploaded_file.name}"
-    source_label = uploaded_file.name
     spinner_msg = (
-        f"Parsing transcript from {uploaded_file.name} and indexing moments..."
+        f"Parsing transcript from {uploaded_file.name}..."
         if upload_ext in {".vtt", ".srt", ".txt"}
-        else f"Transcribing {uploaded_file.name} with Whisper and indexing moments..."
+        else f"Transcribing {uploaded_file.name} with Whisper..."
     )
     try:
         with st.spinner(spinner_msg):
@@ -383,7 +345,6 @@ elif mode != "YouTube Link" and uploaded_file is not None:
 if engine is not None and source_key:
     if st.session_state.get("current_source") != source_key:
         st.session_state.current_source = source_key
-        st.session_state.seek_time = 0
         st.session_state.chat_history = []
         st.session_state.quiz_mode = False
         st.session_state.quiz_checked = False
@@ -394,17 +355,12 @@ if engine is not None and source_key:
             return
         st.session_state.chat_history.append({"role": "user", "content": q_text})
         try:
-            with st.spinner("Searching transcript moments..."):
-                ans, moments = engine.query_with_moments(q_text)
+            with st.spinner("Searching transcript..."):
+                ans = engine.query(q_text)
         except Exception as e:
-            ans, moments = f"Something went wrong: {e}", []
-        st.session_state.chat_history.append({"role": "assistant", "content": ans, "moments": moments})
-        if moments:
-            st.session_state.seek_time = moments[0]
+            ans = f"Something went wrong: {e}"
+        st.session_state.chat_history.append({"role": "assistant", "content": ans})
 
-    all_moments = sorted({t for msg in st.session_state.chat_history for t in msg.get("moments", [])})
-    seek_time = st.session_state.get("seek_time", 0)
-    total_dur = max(engine.total_duration, max(all_moments, default=0), 1)
     title = engine.video_info.get("title", "Recording")
     author = engine.video_info.get("author", "Media")
     source_badge = {
@@ -418,54 +374,24 @@ if engine is not None and source_key:
     with col_left:
         with st.container(key="video_card", border=True):
             if mode == "YouTube Link":
-                st.video(f"https://www.youtube.com/watch?v={yt_id}", start_time=seek_time)
+                st.video(f"https://www.youtube.com/watch?v={yt_id}")
             elif upload_ext in {".mp4", ".webm"}:
-                st.video(upload_bytes, start_time=seek_time)
+                st.video(upload_bytes)
             elif upload_ext in {".m4a", ".mp3", ".wav", ".ogg", ".flac"}:
-                st.audio(upload_bytes, start_time=seek_time)
+                st.audio(upload_bytes)
             else:
                 st.info(f"Transcript loaded from {uploaded_file.name} ({len(engine.transcription or ''):,} characters).")
 
-            dur_label = fmt_time(engine.total_duration) if engine.total_duration else "Unknown"
             st.markdown(
                 f'<div class="tm-meta"><h2>{html.escape(title)}</h2>'
-                f'<p>{html.escape(author)} &middot; {dur_label}<span class="tm-badge">{source_badge}</span></p></div>',
+                f'<p>{html.escape(author)}<span class="tm-badge">{source_badge}</span></p></div>',
                 unsafe_allow_html=True,
             )
-
-            pct = min(100.0, (seek_time / total_dur) * 100.0)
-            pins_html = "".join(
-                f'<span class="tm-pin{" active" if t == seek_time else ""}" style="left:{min(100.0, (t / total_dur) * 100.0):.2f}%" title="{fmt_time(t)}"></span>'
-                for t in all_moments
-            )
-            tl_heading = (
-                "Moments used in answers. Select one to jump there."
-                if all_moments
-                else "Ask a question to highlight transcript moments."
-            )
-            st.markdown(
-                f'<div class="tm-tl">'
-                f'<h3>{tl_heading}</h3>'
-                f'<div class="tm-track">'
-                f'<div class="tm-fill" style="width:{pct:.2f}%"></div>'
-                f'{pins_html}'
-                f'<div class="tm-head" style="left:{pct:.2f}%"></div>'
-                f'</div>'
-                f'<div class="tm-times"><span>{fmt_time(seek_time)}</span><span>{dur_label}</span></div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            if all_moments:
-                with st.container(key="tl_pills", horizontal=True, gap="small"):
-                    for t in all_moments:
-                        if st.button(fmt_time(t), key=f"tl_btn_{t}"):
-                            st.session_state.seek_time = t
-                            st.rerun()
 
     with col_right:
         with st.container(key="chat_card", border=True):
             with st.container(key="chat_head"):
-                h_title, h_actions = st.columns([0.5, 4.5], vertical_alignment="center")
+                h_title, h_actions = st.columns([0.8, 3.2], vertical_alignment="center")
                 with h_title:
                     panel_title = "Quiz" if st.session_state.get("quiz_mode") else "Chat"
                     st.markdown(f'<p class="tm-chead-title">{panel_title}</p>', unsafe_allow_html=True)
@@ -477,21 +403,6 @@ if engine is not None and source_key:
                             st.session_state.quiz_mode = not st.session_state.get("quiz_mode", False)
                             st.rerun()
                         st.download_button(
-                            "Download chat",
-                            data=lambda: format_chat_markdown(title, source_label, st.session_state.get("chat_history", [])),
-                            file_name=f"tubemate-chat-{slug}.md",
-                            mime="text/markdown",
-                            on_click="ignore",
-                            disabled=not st.session_state.chat_history,
-                        )
-                        st.download_button(
-                            "Download summary",
-                            data=lambda: engine.get_summary(),
-                            file_name=f"tubemate-summary-{slug}.md",
-                            mime="text/markdown",
-                            on_click="ignore",
-                        )
-                        st.download_button(
                             "Download Anki",
                             data=lambda: engine.get_anki_txt(),
                             file_name=f"tubemate-anki-{slug}.txt",
@@ -500,7 +411,6 @@ if engine is not None and source_key:
                         )
                         if st.button("Clear"):
                             st.session_state.chat_history = []
-                            st.session_state.seek_time = 0
                             st.session_state.quiz_checked = False
                             st.rerun()
 
@@ -532,10 +442,6 @@ if engine is not None and source_key:
                                     st.success(f"Correct! {item['explanation']}")
                                 else:
                                     st.error(f"Answer: {correct_opt}. {item['explanation']}")
-                                if item.get("timestamp", 0) > 0:
-                                    if st.button(f"Jump to {fmt_time(item['timestamp'])}", key=f"quiz_ts_{q_idx}"):
-                                        st.session_state.seek_time = item["timestamp"]
-                                        st.rerun()
                             st.write("")
 
                 with st.container(key="chat_ask"):
@@ -561,7 +467,7 @@ if engine is not None and source_key:
             else:
                 with st.container(key="chat_log", height=420, border=False, autoscroll=True):
                     st.markdown('<p class="tm-hint">Transcript is ready. Ask anything about this recording.</p>', unsafe_allow_html=True)
-                    for idx, msg in enumerate(st.session_state.chat_history):
+                    for msg in st.session_state.chat_history:
                         if msg["role"] == "user":
                             st.markdown(
                                 f'<div class="tm-u-row"><div class="tm-u">{html.escape(msg["content"])}</div></div>',
@@ -569,13 +475,6 @@ if engine is not None and source_key:
                             )
                         else:
                             st.markdown(msg["content"])
-                            if moments := msg.get("moments"):
-                                with st.container(key=f"ts_row_{idx}", horizontal=True, gap="small"):
-                                    st.markdown('<span class="tm-from">From</span>', unsafe_allow_html=True)
-                                    for t in moments:
-                                        if st.button(fmt_time(t), key=f"msg_{idx}_ts_{t}"):
-                                            st.session_state.seek_time = t
-                                            st.rerun()
 
                 with st.container(key="chat_ask"):
                     with st.container(key="sugg_row", horizontal=True, gap="small"):
@@ -604,7 +503,7 @@ st.markdown("""
   <ol class="steps tm-steps">
     <li><b>Paste a link or upload</b><span>Any YouTube video, recording file (.mp4/.mp3), or .vtt/.txt transcript.</span></li>
     <li><b>TubeMate reads it</b><span>It uses YouTube captions when available and falls back to Whisper audio transcription when they aren't.</span></li>
-    <li><b>Ask, jump & export</b><span>Jump straight to cited timestamps and download the chat, summary, or Anki flashcards (.txt).</span></li>
+    <li><b>Ask, quiz & export</b><span>Ask questions in English, test yourself with a 5-question quiz, and download Anki flashcards (.txt).</span></li>
   </ol>
 </section>
 <p class="tm-foot">Answers come only from the transcript. If something isn't in the recording, TubeMate says so.</p>

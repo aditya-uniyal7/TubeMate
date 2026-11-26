@@ -17,7 +17,7 @@ MEDIA_EXTENSIONS = {".mp4", ".m4a", ".mp3", ".wav", ".webm", ".ogg", ".flac", ".
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|live/|embed/)([A-Za-z0-9_-]{11})")
 BARE_YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 SUBTITLE_RANGE_RE = re.compile(
-    r"^(\d{1,2}:)?(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{1,2}:)?(\d{2}):(\d{2})[.,](\d{3})"
+    r"^\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->\s*\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}"
 )
 SPEAKER_TAG_RE = re.compile(r"<v\s+([^>]+)>", re.IGNORECASE)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -31,39 +31,9 @@ def extract_youtube_id(source: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _parse_ts_seconds(hours_part: str | None, mins: str, secs: str) -> float:
-    hrs = int(hours_part.rstrip(":")) if hours_part else 0
-    return float(hrs * 3600 + int(mins) * 60 + int(secs))
-
-
-def _segments_from_whisper_response(response) -> list[dict]:
-    raw_segments = (
-        response.get("segments")
-        if isinstance(response, dict)
-        else getattr(response, "segments", None)
-    )
-    segments = []
-    for seg in raw_segments or []:
-        getter = seg.get if isinstance(seg, dict) else lambda k, d=None: getattr(seg, k, d)
-        text = (getter("text", "") or "").strip()
-        start = float(getter("start", 0.0))
-        end = float(getter("end", start))
-        if text:
-            segments.append({"text": text, "start": start, "duration": max(0.0, end - start)})
-
-    if segments:
-        return segments
-
-    full_text = response if isinstance(response, str) else (
-        response.get("text") if isinstance(response, dict) else getattr(response, "text", "")
-    )
-    full_text = (full_text or "").strip()
-    return [{"text": full_text, "start": 0.0, "duration": 0.0}] if full_text else []
-
-
 class Transcription:
     @staticmethod
-    def _fetch_youtube_segments(vid: str) -> list[dict] | None:
+    def _fetch_youtube_transcript(vid: str) -> str | None:
         try:
             tracks = YouTubeTranscriptApi().list(vid)
             try:
@@ -81,16 +51,12 @@ class Transcription:
                 else:
                     transcript = track.fetch()
 
-            segments = [
-                {
-                    "text": item["text"].strip(),
-                    "start": float(item.get("start", 0.0)),
-                    "duration": float(item.get("duration", 0.0)),
-                }
+            text = " ".join(
+                item["text"].strip()
                 for item in transcript.to_raw_data()
                 if item.get("text", "").strip()
-            ]
-            return segments or None
+            ).strip()
+            return text or None
         except Exception as e:
             print(f"YouTube transcript unavailable ({e}). Falling back to Whisper...")
             return None
@@ -139,7 +105,7 @@ class Transcription:
         return audio_path, meta
 
     @staticmethod
-    def _transcribe_audio_segments(audio_path: str) -> list[dict]:
+    def _transcribe_audio(audio_path: str) -> str:
         load_dotenv()
         errors = []
         providers = (
@@ -154,11 +120,10 @@ class Transcription:
                         response = client.audio.transcriptions.create(
                             file=audio_file,
                             model=model_name,
-                            response_format="verbose_json",
-                            timestamp_granularities=["segment"],
                         )
-                    if segments := _segments_from_whisper_response(response):
-                        return segments
+                    text = response if isinstance(response, str) else getattr(response, "text", "")
+                    if text and text.strip():
+                        return text.strip()
                 except Exception as e:
                     errors.append(f"{label} failed: {e}")
 
@@ -167,55 +132,38 @@ class Transcription:
         raise RuntimeError("No GROQ_API_KEY or OPENAI_API_KEY found for Whisper transcription.")
 
     @staticmethod
-    def _parse_subtitle_segments(raw_text: str, ext: str) -> list[dict]:
+    def _clean_subtitle_text(raw_text: str, ext: str) -> str:
         if ext == ".txt":
-            text = raw_text.strip()
-            return [{"text": text, "start": 0.0, "duration": 0.0}] if text else []
+            return raw_text.strip()
 
-        segments, buffer = [], []
-        current_start, current_duration = 0.0, 0.0
-
-        def flush():
-            if buffer:
-                if joined := " ".join(buffer).strip():
-                    segments.append({"text": joined, "start": current_start, "duration": current_duration})
-                buffer.clear()
-
+        lines = []
         for raw_line in raw_text.splitlines():
             line = raw_line.strip()
-            if not line:
-                flush()
-                continue
-            if line.startswith(("WEBVTT", "NOTE", "Kind:", "Language:")) or (line.isdigit() and not buffer):
-                continue
-            if match := SUBTITLE_RANGE_RE.match(line):
-                flush()
-                s = _parse_ts_seconds(match.group(1), match.group(2), match.group(3))
-                e = _parse_ts_seconds(match.group(5), match.group(6), match.group(7))
-                current_start, current_duration = s, max(0.0, e - s)
+            if (
+                not line
+                or line.startswith(("WEBVTT", "NOTE", "Kind:", "Language:"))
+                or line.isdigit()
+                or SUBTITLE_RANGE_RE.match(line)
+            ):
                 continue
             cleaned = HTML_TAG_RE.sub("", SPEAKER_TAG_RE.sub(r"\1: ", line)).strip()
-            if cleaned and (not buffer or buffer[-1] != cleaned):
-                buffer.append(cleaned)
-
-        flush()
-        return segments
+            if cleaned and (not lines or lines[-1] != cleaned):
+                lines.append(cleaned)
+        return "\n".join(lines).strip()
 
     @staticmethod
     def transcribe_uploaded_file(
         file_bytes: bytes, filename: str
-    ) -> tuple[list[dict] | None, str | None, str | None]:
+    ) -> tuple[str | None, str | None, str | None]:
         ext = os.path.splitext((filename or "").strip())[1].lower()
         if not file_bytes:
             return None, None, "Uploaded file is empty."
 
         if ext in TEXT_TRANSCRIPT_EXTENSIONS:
-            segments = Transcription._parse_subtitle_segments(
-                file_bytes.decode("utf-8", errors="replace"), ext
-            )
-            if not segments:
+            text = Transcription._clean_subtitle_text(file_bytes.decode("utf-8", errors="replace"), ext)
+            if not text:
                 return None, None, "Uploaded transcript file contains no readable text."
-            return segments, "transcript_file", None
+            return text, "transcript_file", None
 
         if ext in MEDIA_EXTENSIONS:
             if len(file_bytes) > MAX_WHISPER_FILE_BYTES:
@@ -231,49 +179,44 @@ class Transcription:
                     tmp_path = os.path.join(tmpdir, f"upload{ext}")
                     with open(tmp_path, "wb") as f:
                         f.write(file_bytes)
-                    segments = Transcription._transcribe_audio_segments(tmp_path)
-                    if not segments:
+                    text = Transcription._transcribe_audio(tmp_path)
+                    if not text:
                         return None, None, "Whisper returned an empty transcript."
-                    return segments, "whisper", None
+                    return text, "whisper", None
             except Exception as e:
                 return None, None, str(e)
 
         return None, None, f"Unsupported file format '{ext or 'unknown'}'."
 
     @staticmethod
-    def _transcribe_with_whisper(source_url: str) -> tuple[list[dict] | None, dict | None, str | None]:
+    def _transcribe_with_whisper(source_url: str) -> tuple[str | None, dict | None, str | None]:
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 audio_path, meta = Transcription._download_audio(source_url, tmpdir)
-                segments = Transcription._transcribe_audio_segments(audio_path)
-                if not segments:
+                text = Transcription._transcribe_audio(audio_path)
+                if not text:
                     return None, meta, "Whisper returned an empty transcript."
-                return segments, meta, None
+                return text, meta, None
         except Exception as e:
             print(f"Whisper transcription error: {e}")
             return None, None, str(e)
 
     @staticmethod
-    def get_segments_with_source(source: str) -> tuple[list[dict] | None, str | None, dict | None, str | None]:
+    def get_transcription_with_source(source: str) -> tuple[str | None, str | None, dict | None, str | None]:
         vid = extract_youtube_id(source)
         if not vid:
             return None, None, None, "Please enter a valid YouTube link."
 
-        if segments := Transcription._fetch_youtube_segments(vid):
-            return segments, "youtube", None, None
+        if text := Transcription._fetch_youtube_transcript(vid):
+            return text, "youtube", None, None
 
-        segments, meta, err = Transcription._transcribe_with_whisper(f"https://www.youtube.com/watch?v={vid}")
-        return segments, ("whisper" if segments else None), meta, err
-
-    @staticmethod
-    def get_segments(vid: str) -> list[dict] | None:
-        segments, _, _, _ = Transcription.get_segments_with_source(vid)
-        return segments
+        text, meta, err = Transcription._transcribe_with_whisper(f"https://www.youtube.com/watch?v={vid}")
+        return text, ("whisper" if text else None), meta, err
 
     @staticmethod
     def get_transcription(vid: str) -> str | None:
-        segments = Transcription.get_segments(vid)
-        return " ".join(seg["text"] for seg in segments) if segments else None
+        text, _, _, _ = Transcription.get_transcription_with_source(vid)
+        return text
 
     @staticmethod
     def get_video_info(source: str) -> dict:
